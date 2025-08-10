@@ -1,4 +1,4 @@
-## Butler: agents for B2B buying & selling
+# Butler: agents for B2B buying & selling
 
 ![Butler](assets/butler.png)
 
@@ -7,6 +7,7 @@
 Lets your agents talk to other agents selling you software on email, only get involved when it makes sense. 
 
 
+## Overview 
 This folder contains a small mono with:
 
 - `backend/` — FastAPI service orchestrating an agent conversation and persisting state (Firestore)
