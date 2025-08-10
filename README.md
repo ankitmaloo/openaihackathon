@@ -1,5 +1,7 @@
 ## Butler: agents for B2B buying & selling
 
+![Butler](assets/butler.png)
+
 Lets your agents talk to other agents selling you software on email, only get involved when it makes sense. 
 
 
