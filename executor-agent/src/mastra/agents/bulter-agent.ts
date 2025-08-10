@@ -430,14 +430,20 @@ export const butlerAgent = new Agent({
 export const slackMessageTool = createTool({
   id: "slackMessageTool",
   inputSchema: z.object({
+    is_tool_available: z.boolean().describe("Whether the tool is available."),
+    tool_name: z.string().describe("The name of the tool."),
     user_name: z.string().describe("The name of the user."),
-    message: z
+    actionItem: z
       .string()
       .describe("The action item to be executed, sent on Slack."),
   }),
+  outputSchema: z.object({
+    success: z.boolean().describe("Whether the message was sent successfully."),
+    response: z.any().describe("The response from Slack API."),
+  }),
   description: `Use this tool to send a message to Slack.`,
   execute: async (ctx) => {
-    const { message, user_name } = ctx.context;
+    const { actionItem, user_name } = ctx.context;
     const response = await fetch(
       "https://proxy.withampersand.com/chat.postMessage",
       {
@@ -456,7 +462,7 @@ export const slackMessageTool = createTool({
         },
         body: JSON.stringify({
           channel: "C099V4XGVV2",
-          text: `[${user_name}]: ${message}`,
+          text: `[${user_name}]: ${actionItem}`,
         }),
       }
     );
@@ -469,7 +475,10 @@ export const slackMessageTool = createTool({
 
     const result = await response.json();
 
-    return result;
+    return {
+      success: true,
+      response: result,
+    };
   },
 });
 

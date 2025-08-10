@@ -2,6 +2,7 @@ import { createStep, createWorkflow } from "@mastra/core";
 import { z } from "zod";
 import { butlerAgent } from "../agents/bulter-agent";
 import {
+  slackMessageTool,
   toolExecutionAgent,
   toolCheckerTool,
   toolCheckerOutputSchema,
@@ -10,7 +11,7 @@ import {
 
 const butletStep = createStep(butlerAgent);
 const toolCheckerStep = createStep(toolCheckerTool);
-const executeTool = createStep(toolExecutionAgent);
+const executeTool = createStep(slackMessageTool);
 
 export const butlerWorkflow = createWorkflow({
   id: "butler-workflow",
