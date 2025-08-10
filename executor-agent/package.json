@@ -6,7 +6,8 @@
     "scripts": {
         "build": "mastra build",
         "dev": "mastra dev",
-        "start": "mastra start"
+        "start": "mastra start",
+        "server": "npx tsx src/server.ts"
     },
     "keywords": [],
     "author": "",
