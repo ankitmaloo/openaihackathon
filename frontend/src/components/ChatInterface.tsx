@@ -1,19 +1,10 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { 
-  Paperclip, 
-  Search, 
-  Mic, 
-  Send, 
-  Sparkles, 
-  PenTool, 
-  Target, 
-  Lightbulb, 
-  MessageCircle,
-  MoreHorizontal 
-} from "lucide-react";
+import { Paperclip, Search, Mic, Send } from "lucide-react";
 import { TypewriterText } from "./TypewriterText";
+import { initFirebase, onDocumentChange } from "@/lib/firebase";
+import { startConversation } from "@/lib/api";
 
 interface Message {
   id: string;
@@ -22,14 +13,27 @@ interface Message {
   timestamp: Date;
 }
 
-export const ChatInterface = () => {
+interface LogItem {
+  id: string;
+  text: string;
+  actor?: string;
+  level?: "info" | "warn" | "error" | "action";
+  timestamp: Date;
+}
+
+type ChatInterfaceProps = {
+  docId?: string;
+};
+
+export const ChatInterface = ({ docId }: ChatInterfaceProps) => {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [isGenerating, setIsGenerating] = useState(false);
-
-  const suggestions = [
-    { icon: MoreHorizontal, text: "More", color: "from-gray-500 to-slate-500" },
-  ];
+  const [, setA2aTick] = useState(0);
+  const [, setHistoryTick] = useState(0);
+  const [internalDocId, setInternalDocId] = useState<string | undefined>(undefined);
+  const [logsMain, setLogsMain] = useState<LogItem[]>([]);
+  const [logsHistory, setLogsHistory] = useState<LogItem[]>([]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -42,37 +46,120 @@ export const ChatInterface = () => {
       timestamp: new Date(),
     };
 
-    setMessages(prev => [...prev, userMessage]);
-    setInput("");
+    setMessages((prev) => [...prev, userMessage]);
     setIsGenerating(true);
+    const prompt = input;
+    setInput("");
 
-    // Simulate AI response delay
-    setTimeout(() => {
-      const aiResponse: Message = {
-        id: (Date.now() + 1).toString(),
-        content: generateFakeResponse(),
-        isUser: false,
-        timestamp: new Date(),
-      };
-      setMessages(prev => [...prev, aiResponse]);
+    try {
+      const res = await startConversation(prompt);
+      setInternalDocId(res.conversation_id);
+    } catch (err) {
+      console.error('Failed to start conversation', err);
       setIsGenerating(false);
-    }, 1000);
+    }
   };
 
-  const handleSuggestionClick = (text: string) => {
-    setInput(text);
-  };
+  const allLogs: LogItem[] = [...logsMain, ...logsHistory].sort(
+    (a, b) => a.timestamp.getTime() - b.timestamp.getTime()
+  );
 
-  const generateFakeResponse = () => {
-    const responses = [
-      "This is a comprehensive response to your question. I'll break this down into several key points that will help you understand the topic better. First, let's consider the fundamental aspects of what you're asking about. The complexity of this subject requires us to examine multiple perspectives and approaches. From a practical standpoint, there are several strategies you can implement immediately. Additionally, it's important to consider the long-term implications of these decisions. Research has shown that taking a methodical approach often yields the best results. Furthermore, industry experts recommend considering various factors before making final decisions. The implementation process typically involves several phases, each building upon the previous one. It's also worth noting that continuous evaluation and adjustment are crucial for success.",
-      "Great question! Let me provide you with a detailed explanation that covers all the important aspects. The topic you've raised touches on several interconnected concepts that are worth exploring in depth. From my analysis, there are three main categories we should focus on. Each category has its own set of considerations and potential outcomes. The first category involves understanding the foundational principles. These principles serve as the building blocks for everything else we'll discuss. The second category deals with practical applications and real-world scenarios. Here, we can see how theory translates into actionable strategies. The third category encompasses advanced techniques and optimization methods. These are particularly useful for those looking to achieve exceptional results.",
-      "I'd be happy to help you with this! This is actually a fascinating area with many different approaches and perspectives. Let me walk you through the most effective methods and best practices. Starting with the basics, it's essential to establish a solid foundation. This foundation will support all subsequent efforts and improvements. Moving forward, we can explore more advanced concepts and techniques. Many professionals in this field recommend starting with small, manageable steps. This approach allows for continuous learning and adaptation. As you progress, you'll likely discover new opportunities and possibilities. The key is to maintain flexibility while staying focused on your primary objectives. Success in this area often requires patience, persistence, and continuous improvement."
-    ];
-    return responses[Math.floor(Math.random() * responses.length)];
-  };
+  // Backend integration: start conversation and listen for updates
+  const effectiveDocId = docId ?? internalDocId;
 
   const isEmpty = messages.length === 0;
+
+  // Firestore listeners: a2a/{docId} and a2a/{docId}/history/{docId}
+  useEffect(() => {
+    if (!effectiveDocId) return; // no-op until a docId is provided
+    try {
+      initFirebase();
+    } catch (e) {
+      // Credentials/config not provided yet; skip wiring listeners.
+      return;
+    }
+
+    const unsubs: Array<() => void> = [];
+
+    // Top-level doc listener
+    unsubs.push(
+      onDocumentChange(`a2a/${effectiveDocId}`, (snap) => {
+        setA2aTick((t) => t + 1);
+        // Optionally map doc data into messages if the shape matches
+        const data = snap.data() as any;
+        const items = Array.isArray(data?.messages) ? data.messages : [];
+        const nextChat: Message[] = [];
+        const nextLogs: LogItem[] = [];
+        items.forEach((m: any, idx: number) => {
+          const ts: Date = m?.timestamp?.toDate ? m.timestamp.toDate() : new Date();
+          const content: string = String(m?.content ?? m?.text ?? "");
+          const role: string | undefined = m?.role;
+          const isChat = m?.isUser === true || role === 'user' || role === 'assistant';
+          if (isChat && content) {
+            nextChat.push({
+              id: String(m?.id ?? `${snap.id}-${idx}`),
+              content,
+              isUser: m?.isUser === true || role === 'user',
+              timestamp: ts,
+            });
+          } else if (content) {
+            nextLogs.push({
+              id: String(m?.id ?? `${snap.id}-log-${idx}`),
+              text: content,
+              actor: m?.actor ?? m?.agent ?? role ?? 'agent',
+              level: (m?.level as LogItem['level']) ?? (m?.type ? 'action' : 'info'),
+              timestamp: ts,
+            });
+          }
+        });
+        if (nextChat.length) setMessages(nextChat);
+        setLogsMain(nextLogs);
+        setIsGenerating(false);
+      })
+    );
+
+    // Subcollection doc listener
+    unsubs.push(
+      onDocumentChange(`a2a/${effectiveDocId}/history/${effectiveDocId}`, (snap) => {
+        setHistoryTick((t) => t + 1);
+        const data = snap.data() as any;
+        const items = Array.isArray(data?.messages) ? data.messages : [];
+        const nextChat: Message[] = [];
+        const nextLogs: LogItem[] = [];
+        items.forEach((m: any, idx: number) => {
+          const ts: Date = m?.timestamp?.toDate ? m.timestamp.toDate() : new Date();
+          const content: string = String(m?.content ?? m?.text ?? "");
+          const role: string | undefined = m?.role;
+          const isChat = m?.isUser === true || role === 'user' || role === 'assistant';
+          if (isChat && content) {
+            nextChat.push({
+              id: String(m?.id ?? `${snap.id}-h-${idx}`),
+              content,
+              isUser: m?.isUser === true || role === 'user',
+              timestamp: ts,
+            });
+          } else if (content) {
+            nextLogs.push({
+              id: String(m?.id ?? `${snap.id}-h-log-${idx}`),
+              text: content,
+              actor: m?.actor ?? m?.agent ?? role ?? 'agent',
+              level: (m?.level as LogItem['level']) ?? (m?.type ? 'action' : 'info'),
+              timestamp: ts,
+            });
+          }
+        });
+        if (nextChat.length) setMessages(nextChat);
+        setLogsHistory(nextLogs);
+        setIsGenerating(false);
+      })
+    );
+
+    return () => {
+      unsubs.forEach((u) => u());
+    };
+  }, [effectiveDocId]);
+
+  // handleSubmit performs the start call and listeners above respond to updates
 
   return (
     <div className="flex-1 flex flex-col">
@@ -136,6 +223,23 @@ export const ChatInterface = () => {
         <div className="flex-1 flex flex-col">
           <div className="flex-1 overflow-y-auto p-6">
             <div className="max-w-3xl mx-auto space-y-6">
+              {allLogs.length > 0 && (
+                <div className="space-y-2">
+                  <div className="text-xs uppercase tracking-wide text-muted-foreground">Agent Log</div>
+                  {allLogs.map((log) => (
+                    <div
+                      key={log.id}
+                      className="rounded-md border border-border/50 bg-background/60 px-3 py-2 text-xs text-muted-foreground"
+                    >
+                      <div className="flex items-center justify-between gap-3">
+                        <span className="font-medium">{log.actor ?? 'agent'}</span>
+                        <span className="opacity-70">{log.timestamp.toLocaleTimeString()}</span>
+                      </div>
+                      <div className="mt-1 whitespace-pre-wrap font-mono">{log.text}</div>
+                    </div>
+                  ))}
+                </div>
+              )}
               {messages.map((message) => (
                 <div
                   key={message.id}
@@ -206,12 +310,7 @@ export const ChatInterface = () => {
         </div>
       )}
 
-      <div className="p-4 text-center text-sm text-muted-foreground">
-        By messaging ChatGPT, you agree to our{" "}
-        <button className="underline hover:text-foreground transition-colors">Terms</button>
-        {" "}and have read our{" "}
-        <button className="underline hover:text-foreground transition-colors">Privacy Policy</button>.
-      </div>
+      
     </div>
   );
 };
