@@ -1,0 +1,10 @@
+specVersion: 1.0.0
+integrations:
+  - name: create-messages-on-slack
+    displayName: Create messages on Slack
+    provider: slack
+    write:
+      objects:
+        - objectName: chat
+    proxy:
+      enabled: true
