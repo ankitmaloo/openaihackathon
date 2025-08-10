@@ -31,7 +31,7 @@ export const ChatInterface = ({ docId }: ChatInterfaceProps) => {
   const [isGenerating, setIsGenerating] = useState(false);
   const [, setA2aTick] = useState(0);
   const [, setHistoryTick] = useState(0);
-  const [internalDocId, setInternalDocId] = useState<string | undefined>('OdCm18FwSOGNjZYhmG2l');
+  const [internalDocId, setInternalDocId] = useState<string | undefined>(undefined);
   const [logsMain, setLogsMain] = useState<LogItem[]>([]);
   const [logsHistory, setLogsHistory] = useState<LogItem[]>([]);
 
@@ -54,6 +54,14 @@ export const ChatInterface = ({ docId }: ChatInterfaceProps) => {
     try {
       const res = await startConversation(prompt);
       setInternalDocId(res.conversation_id);
+      //
+      const newMessage:Message = {
+        id:Date.now().toString(),
+        content: res.message,
+        isUser: false,
+        timestamp: new Date(),
+      }
+      setMessages((prev) => [...prev, newMessage]);
     } catch (err) {
       console.error('Failed to start conversation', err);
       setIsGenerating(false);
@@ -104,6 +112,17 @@ export const ChatInterface = ({ docId }: ChatInterfaceProps) => {
         // Backend root doc holds metadata; do not expect messages here.
         // Keep this listener lightweight in case status is needed later.
         setIsGenerating(false);
+        const data = snap.data() as any;
+        if (data.final_message && data.status == 'completed')
+        {
+          const newMessage:Message = {
+          id:Date.now().toString(),
+          content: data.final_message,
+          isUser: false,
+          timestamp: new Date(),
+          }
+          setMessages((prev) => [...prev, newMessage]);
+        }
       })
     );
 

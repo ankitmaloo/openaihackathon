@@ -7,7 +7,16 @@ from typing import Literal, Any, Dict, List
 from agents import Agent, ItemHelpers, Runner, TResponseInputItem, trace
 from firebase import save_chat
 from progress import mark_first_turn_persisted
+from openai import OpenAI
+import os
+from dotenv import load_dotenv
+import urllib.request
+import json as _json
+load_dotenv()
 
+OPENAIAPIKEY = os.getenv("OPENAI_API_KEY")
+
+client = OpenAI(api_key = OPENAIAPIKEY)
 
 PROCUREMENT_AGENT = """
 You are Ava, the AI procurement agent for GreenLoop Inc.
@@ -160,7 +169,15 @@ async def run_proc(query, conversation_id: str) -> None:
         if analysis.is_over and turn_count > 3:
             print(f"\n--- Conversation Over: {analysis.reason} ---")
             # Mark conversation complete
-            save_chat(conversation_id, persist_history, metadata={"status": "completed", "reason": analysis.reason})
+            save_chat(
+                conversation_id,
+                persist_history,
+                metadata={
+                    "status": "completed",
+                    "reason": analysis.reason,
+                    "final_message": "Done",
+                },
+            )
             break
 
         turn_count += 1
@@ -171,19 +188,83 @@ async def run_proc(query, conversation_id: str) -> None:
         print(f"- {item['content']}")
 
     # Ensure final snapshot is persisted even if loop exits via turn limit
-    save_chat(conversation_id, persist_history, metadata={"status": "completed"})
+
+    final_resp = get_ai_resp(conversation_history)
+    print("final response to user", final_resp)
+    save_chat(
+        conversation_id,
+        persist_history,
+        metadata={
+            "status": "completed",
+            "final_message": "Done",
+        },
+    )
+
+    # Build full conversation text and send to local workflow endpoint
+    def _extract_text(content: Any) -> str:
+        if content is None:
+            return ""
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            parts: List[str] = []
+            for part in content:
+                if isinstance(part, str):
+                    parts.append(part)
+                elif isinstance(part, dict):
+                    t = part.get("text") or part.get("content")
+                    if isinstance(t, str):
+                        parts.append(t)
+            return "\n".join([p for p in parts if p])
+        if isinstance(content, dict):
+            t = content.get("text") or content.get("content")
+            if isinstance(t, str):
+                return t
+        try:
+            return str(content)
+        except Exception:
+            return ""
+
+    lines: List[str] = []
+    for item in persist_history:
+        source = item.get("source") or item.get("role") or "system"
+        text = _extract_text(item.get("content"))
+        if not text:
+            continue
+        lines.append(f"{source}: {text}")
+
+    convo_text = "\n\n".join(lines)
+
+    def _post_workflow(text: str) -> None:
+        try:
+            payload = _json.dumps({"conversation": text}).encode("utf-8")
+            req = urllib.request.Request(
+                "http://localhost:3000/workflow",
+                data=payload,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=5) as _resp:
+                _resp.read()
+        except Exception as e:
+            print("[workflow] post failed:", e)
+
+    try:
+        await asyncio.to_thread(_post_workflow, convo_text)
+    except Exception as e:
+        print("[workflow] scheduling failed:", e)
 
 
-def get_ai_resp(input_arr, stream=True, pr_id=None):
+def get_ai_resp(conversation_history, stream=False, pr_id=None):
   out = client.responses.create(
   model="gpt-5",
-    input=input_arr,
-    instructions="You are a an assistant who gets a task. Task is running in background, you just have to answer to the user that you are on it.",
+    input=conversation_history,
+    instructions="Based on this conversation, you have to send a one line message to Maya about next steps. Just give me the message starting with: Hi Maya,",
     previous_response_id=pr_id,
     stream=stream,
     #store=False
   )
-  return out
+  return out.output_text
 
 def stream_assistant_response(query = None, prev_resp_id = None):
     
