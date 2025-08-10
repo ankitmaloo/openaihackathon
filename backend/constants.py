@@ -1,0 +1,1 @@
+FIREBASE_ADMIN_CREDS = "creds.json"
