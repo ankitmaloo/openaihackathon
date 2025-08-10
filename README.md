@@ -1,4 +1,7 @@
-## OpenAI Hackathon Monorepo Slice
+## Butler: agents for B2B buying & selling
+
+Lets your agents talk to other agents selling you software on email, only get involved when it makes sense. 
+
 
 This folder contains a small mono with:
 
