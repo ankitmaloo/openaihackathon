@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from typing import Literal
+from typing import Literal, Any, Dict, List
 
 from agents import Agent, ItemHelpers, Runner, TResponseInputItem, trace
 from firebase import save_chat
+from progress import mark_first_turn_persisted
 
 
 PROCUREMENT_AGENT = """
@@ -88,13 +89,16 @@ def initialize_analyzer():
 
 async def run_proc(query, conversation_id: str) -> None:
 
+    # History used for model interactions
     conversation_history: list[TResponseInputItem] = [
         {"content": query, "role": "system"}
     ]
+    # History persisted to Firestore, augmented with `source`
+    persist_history: List[Dict[str, Any]] = list(conversation_history)
     print("requirement:", query)
 
-    # Persist the initial state
-    save_chat(conversation_id, conversation_history, metadata={"status": "running"})
+    # Persist the initial state (no source for system entry)
+    save_chat(conversation_id, persist_history, metadata={"status": "running"})
 
     proc = initialize_procurement(query)
     vend = initialize_vendor()
@@ -110,11 +114,22 @@ async def run_proc(query, conversation_id: str) -> None:
         procurement_message = ItemHelpers.text_message_outputs(procurement_result.new_items)
         print(f"\nProcurement: {procurement_message}")
 
-        # FIX: Re-assign conversation_history again to get the latest update.
+        # Update model history with the latest items
+        prev_len = len(conversation_history)
         conversation_history = procurement_result.to_input_list()
+        # Capture only new items from this turn and tag source
+        new_items = conversation_history[prev_len:]
+        for it in new_items:
+            # Copy and add source without mutating model history
+            persist_item = dict(it)
+            persist_item["source"] = "Ava"
+            persist_history.append(persist_item)
 
         # Persist after procurement agent turn
-        save_chat(conversation_id, conversation_history)
+        save_chat(conversation_id, persist_history)
+        # Signal that the first meaningful turn is available
+        if turn_count == 0:
+            mark_first_turn_persisted(conversation_id)
 
         # Vendor's turn to speak
         vendor_result = await Runner.run(
@@ -124,11 +139,17 @@ async def run_proc(query, conversation_id: str) -> None:
         vendor_message = ItemHelpers.text_message_outputs(vendor_result.new_items)
         print(f"\nVendor: {vendor_message}")
 
-        # FIX: Re-assign conversation_history instead of extending it.
+        # Update model history and persist tagged vendor items
+        prev_len = len(conversation_history)
         conversation_history = vendor_result.to_input_list()
+        new_items = conversation_history[prev_len:]
+        for it in new_items:
+            persist_item = dict(it)
+            persist_item["source"] = "River"
+            persist_history.append(persist_item)
 
         # Persist after vendor agent turn
-        save_chat(conversation_id, conversation_history)
+        save_chat(conversation_id, persist_history)
 
         # Analyzer's turn to evaluate
         # No state change needed here, just analysis
@@ -139,7 +160,7 @@ async def run_proc(query, conversation_id: str) -> None:
         if analysis.is_over and turn_count > 3:
             print(f"\n--- Conversation Over: {analysis.reason} ---")
             # Mark conversation complete
-            save_chat(conversation_id, conversation_history, metadata={"status": "completed", "reason": analysis.reason})
+            save_chat(conversation_id, persist_history, metadata={"status": "completed", "reason": analysis.reason})
             break
 
         turn_count += 1
@@ -150,4 +171,64 @@ async def run_proc(query, conversation_id: str) -> None:
         print(f"- {item['content']}")
 
     # Ensure final snapshot is persisted even if loop exits via turn limit
-    save_chat(conversation_id, conversation_history, metadata={"status": "completed"})
+    save_chat(conversation_id, persist_history, metadata={"status": "completed"})
+
+
+def get_ai_resp(input_arr, stream=True, pr_id=None):
+  out = client.responses.create(
+  model="gpt-5",
+    input=input_arr,
+    instructions="You are a an assistant who gets a task. Task is running in background, you just have to answer to the user that you are on it.",
+    previous_response_id=pr_id,
+    stream=stream,
+    #store=False
+  )
+  return out
+
+def stream_assistant_response(query = None, prev_resp_id = None):
+    
+    ai_r = get_ai_resp(query, stream=True, pr_id=prev_resp_id)
+    
+    resp_id = ""
+    final_tool_calls = {}
+    
+    for event in ai_r:
+        event_type = event.type
+        if event_type == "response.created":
+        # Print the response id for production logging.
+            response = getattr(event, "response", {})
+            resp_id = getattr(response,"id", "unknown")
+            yield f"__PRID:{resp_id}_PRID__" #changing threadid to resp id to accommodate response api
+            # Continue to next event; do not yield anything to UI.
+            continue
+
+        if event_type == "response.output_item.added":
+            # Extract the item from the event
+            item = event.item
+            # Compare the inner item's type
+            if hasattr(item, "type") and item.type == "function_call":
+                final_tool_calls[event.output_index] = item
+            else:
+                # Process non-function_call items if needed
+                print("Received non-function_call item:", item)
+            continue    
+
+        if (event_type == "response.output_text.delta"):
+            text_delta = getattr(event, "delta", "")
+            yield text_delta
+            continue
+
+        if (event_type == "response.completed"): 
+            break
+
+        # Process additional function call argument delta events
+        if event_type == "response.function_call_arguments.delta":
+            index = event.output_index
+            if index in final_tool_calls:
+                final_tool_calls[index].arguments += event.delta
+
+        if event_type == "error":
+            error_message = f"Error: {getattr(event, 'message', 'Unknown error')}"
+            error_code = getattr(event, 'code', 'Unknown code')
+            yield f"__ERROR:{error_code}__ {error_message}"
+            continue

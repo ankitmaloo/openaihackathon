@@ -31,7 +31,7 @@ export const ChatInterface = ({ docId }: ChatInterfaceProps) => {
   const [isGenerating, setIsGenerating] = useState(false);
   const [, setA2aTick] = useState(0);
   const [, setHistoryTick] = useState(0);
-  const [internalDocId, setInternalDocId] = useState<string | undefined>(undefined);
+  const [internalDocId, setInternalDocId] = useState<string | undefined>('OdCm18FwSOGNjZYhmG2l');
   const [logsMain, setLogsMain] = useState<LogItem[]>([]);
   const [logsHistory, setLogsHistory] = useState<LogItem[]>([]);
 
@@ -81,74 +81,56 @@ export const ChatInterface = ({ docId }: ChatInterfaceProps) => {
 
     const unsubs: Array<() => void> = [];
 
+    // Helper to map backend conversation_history to UI messages
+    const extractText = (content: any): string => {
+      if (typeof content === 'string') return content;
+      if (Array.isArray(content)) {
+        // Join known content parts with text fields
+        return content
+          .map((part: any) => (typeof part === 'string' ? part : String(part?.text ?? '')))
+          .filter(Boolean)
+          .join('\n');
+      }
+      if (content && typeof content === 'object') {
+        if (typeof content.text === 'string') return content.text;
+      }
+      return '';
+    };
+
     // Top-level doc listener
     unsubs.push(
       onDocumentChange(`a2a/${effectiveDocId}`, (snap) => {
         setA2aTick((t) => t + 1);
-        // Optionally map doc data into messages if the shape matches
-        const data = snap.data() as any;
-        const items = Array.isArray(data?.messages) ? data.messages : [];
-        const nextChat: Message[] = [];
-        const nextLogs: LogItem[] = [];
-        items.forEach((m: any, idx: number) => {
-          const ts: Date = m?.timestamp?.toDate ? m.timestamp.toDate() : new Date();
-          const content: string = String(m?.content ?? m?.text ?? "");
-          const role: string | undefined = m?.role;
-          const isChat = m?.isUser === true || role === 'user' || role === 'assistant';
-          if (isChat && content) {
-            nextChat.push({
-              id: String(m?.id ?? `${snap.id}-${idx}`),
-              content,
-              isUser: m?.isUser === true || role === 'user',
-              timestamp: ts,
-            });
-          } else if (content) {
-            nextLogs.push({
-              id: String(m?.id ?? `${snap.id}-log-${idx}`),
-              text: content,
-              actor: m?.actor ?? m?.agent ?? role ?? 'agent',
-              level: (m?.level as LogItem['level']) ?? (m?.type ? 'action' : 'info'),
-              timestamp: ts,
-            });
-          }
-        });
-        if (nextChat.length) setMessages(nextChat);
-        setLogsMain(nextLogs);
+        // Backend root doc holds metadata; do not expect messages here.
+        // Keep this listener lightweight in case status is needed later.
         setIsGenerating(false);
       })
     );
 
-    // Subcollection doc listener
+    // Subcollection doc listener — primary source for conversation items
     unsubs.push(
       onDocumentChange(`a2a/${effectiveDocId}/history/${effectiveDocId}`, (snap) => {
         setHistoryTick((t) => t + 1);
         const data = snap.data() as any;
-        const items = Array.isArray(data?.messages) ? data.messages : [];
-        const nextChat: Message[] = [];
+        const items: any[] = Array.isArray(data?.conversation_history)
+          ? data.conversation_history
+          : [];
+
+        // Build log entries from agent-to-agent conversation; skip the first element
+        const agentItems = items.slice(1);
         const nextLogs: LogItem[] = [];
-        items.forEach((m: any, idx: number) => {
-          const ts: Date = m?.timestamp?.toDate ? m.timestamp.toDate() : new Date();
-          const content: string = String(m?.content ?? m?.text ?? "");
-          const role: string | undefined = m?.role;
-          const isChat = m?.isUser === true || role === 'user' || role === 'assistant';
-          if (isChat && content) {
-            nextChat.push({
-              id: String(m?.id ?? `${snap.id}-h-${idx}`),
-              content,
-              isUser: m?.isUser === true || role === 'user',
-              timestamp: ts,
-            });
-          } else if (content) {
-            nextLogs.push({
-              id: String(m?.id ?? `${snap.id}-h-log-${idx}`),
-              text: content,
-              actor: m?.actor ?? m?.agent ?? role ?? 'agent',
-              level: (m?.level as LogItem['level']) ?? (m?.type ? 'action' : 'info'),
-              timestamp: ts,
-            });
-          }
+        agentItems.forEach((m: any, idx: number) => {
+          const text = extractText(m?.content ?? m?.text ?? m);
+          if (!text) return;
+          const actor = m?.source ?? m?.agent ?? m?.role ?? 'agent';
+          nextLogs.push({
+            id: String(m?.id ?? `${snap.id}-h-log-${idx}`),
+            text,
+            actor,
+            level: 'info',
+            timestamp: new Date(),
+          });
         });
-        if (nextChat.length) setMessages(nextChat);
         setLogsHistory(nextLogs);
         setIsGenerating(false);
       })
@@ -223,24 +205,7 @@ export const ChatInterface = ({ docId }: ChatInterfaceProps) => {
         <div className="flex-1 flex flex-col">
           <div className="flex-1 overflow-y-auto p-6">
             <div className="max-w-3xl mx-auto space-y-6">
-              {allLogs.length > 0 && (
-                <div className="space-y-2">
-                  <div className="text-xs uppercase tracking-wide text-muted-foreground">Agent Log</div>
-                  {allLogs.map((log) => (
-                    <div
-                      key={log.id}
-                      className="rounded-md border border-border/50 bg-background/60 px-3 py-2 text-xs text-muted-foreground"
-                    >
-                      <div className="flex items-center justify-between gap-3">
-                        <span className="font-medium">{log.actor ?? 'agent'}</span>
-                        <span className="opacity-70">{log.timestamp.toLocaleTimeString()}</span>
-                      </div>
-                      <div className="mt-1 whitespace-pre-wrap font-mono">{log.text}</div>
-                    </div>
-                  ))}
-                </div>
-              )}
-              {messages.map((message) => (
+                            {messages.map((message) => (
                 <div
                   key={message.id}
                   className={`flex ${message.isUser ? 'justify-end' : 'justify-start'}`}
@@ -260,6 +225,24 @@ export const ChatInterface = ({ docId }: ChatInterfaceProps) => {
                   </div>
                 </div>
               ))}
+              {allLogs.length > 0 && (
+                <div className="space-y-2">
+                  <div className="text-xs uppercase tracking-wide text-muted-foreground">Agent Log</div>
+                  {allLogs.map((log) => (
+                    <div
+                      key={log.id}
+                      className="rounded-md border border-border/50 bg-background/60 px-3 py-2 text-xs text-muted-foreground"
+                    >
+                      <div className="flex items-center justify-between gap-3">
+                        <span className="font-medium">{log.actor ?? 'agent'}</span>
+                        <span className="opacity-70">{log.timestamp.toLocaleTimeString()}</span>
+                      </div>
+                      <div className="mt-1 whitespace-pre-wrap font-mono">{log.text}</div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
               {isGenerating && (
                 <div className="flex justify-start">
                   <div className="bg-accent text-accent-foreground rounded-2xl px-4 py-3 mr-12">
