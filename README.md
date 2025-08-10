@@ -2,6 +2,8 @@
 
 ![Butler](assets/butler.png)
 
+![Involve Human](assets/involve_human.png)
+
 Lets your agents talk to other agents selling you software on email, only get involved when it makes sense. 
 
 
