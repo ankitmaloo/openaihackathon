@@ -175,7 +175,7 @@ async def run_proc(query, conversation_id: str) -> None:
                 metadata={
                     "status": "completed",
                     "reason": analysis.reason,
-                    "final_message": "Done",
+                    "final_message": "Hi Maya, \n updating you with the details and action items in a minute.",
                 },
             )
             break
@@ -196,7 +196,7 @@ async def run_proc(query, conversation_id: str) -> None:
         persist_history,
         metadata={
             "status": "completed",
-            "final_message": "Done",
+            "final_message": final_resp,
         },
     )
 
